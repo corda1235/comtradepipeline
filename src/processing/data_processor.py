@@ -11,7 +11,10 @@ import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
-from loguru import logger
+from src.utils.logging_utils import get_module_logger
+
+# Module logger
+logger = get_module_logger("data_processor")
 
 
 class DataProcessor:
@@ -146,6 +149,9 @@ class DataProcessor:
         reporter_id = self.db_manager.get_reporter_id(reporter_code)
         if reporter_id:
             self.reporter_cache[reporter_code] = reporter_id
+        else:
+            logger.warning(f"Reporter ID not found for code: {reporter_code}")
+            
         return reporter_id
     
     def get_partner_id(self, partner_code: str) -> Optional[int]:
@@ -164,6 +170,9 @@ class DataProcessor:
         partner_id = self.db_manager.get_partner_id(partner_code)
         if partner_id:
             self.partner_cache[partner_code] = partner_id
+        else:
+            logger.warning(f"Partner ID not found for code: {partner_code}")
+            
         return partner_id
     
     def get_commodity_id(self, commodity_code: str) -> Optional[int]:
@@ -182,6 +191,9 @@ class DataProcessor:
         commodity_id = self.db_manager.get_commodity_id(commodity_code)
         if commodity_id:
             self.commodity_cache[commodity_code] = commodity_id
+        else:
+            logger.warning(f"Commodity ID not found for code: {commodity_code}")
+            
         return commodity_id
     
     def get_flow_id(self, flow_code: str) -> Optional[int]:
@@ -200,6 +212,9 @@ class DataProcessor:
         flow_id = self.db_manager.get_flow_id(flow_code)
         if flow_id:
             self.flow_cache[flow_code] = flow_id
+        else:
+            logger.warning(f"Flow ID not found for code: {flow_code}")
+            
         return flow_id
     
     def parse_period(self, period: str) -> Tuple[Optional[int], Optional[int]]:
@@ -215,6 +230,7 @@ class DataProcessor:
                 - Month (int)
         """
         if not period or len(period) != 6:
+            logger.warning(f"Invalid period format: {period}")
             return None, None
         
         try:
@@ -222,11 +238,13 @@ class DataProcessor:
             month = int(period[4:])
             
             if year < 1900 or year > 2100 or month < 1 or month > 12:
+                logger.warning(f"Period out of range: {period}")
                 return None, None
                 
             return year, month
             
         except ValueError:
+            logger.warning(f"Could not parse period: {period}")
             return None, None
     
     def safe_float(self, value: Any) -> Optional[float]:
@@ -245,6 +263,7 @@ class DataProcessor:
         try:
             return float(value)
         except (ValueError, TypeError):
+            logger.debug(f"Could not convert to float: {value}")
             return None
     
     def safe_int(self, value: Any) -> Optional[int]:
@@ -263,6 +282,7 @@ class DataProcessor:
         try:
             return int(value)
         except (ValueError, TypeError):
+            logger.debug(f"Could not convert to int: {value}")
             return None
     
     def safe_bool(self, value: Any) -> Optional[bool]:
@@ -291,6 +311,7 @@ class DataProcessor:
         try:
             return bool(int(value))
         except (ValueError, TypeError):
+            logger.debug(f"Could not convert to bool: {value}")
             return None
     
     def process_tariffline_record(self, record: Dict[str, Any], source_file: str = None) -> Optional[Dict[str, Any]]:
@@ -366,7 +387,7 @@ class DataProcessor:
             return processed_record
             
         except Exception as e:
-            logger.error(f"Error processing record: {str(e)}")
+            logger.exception(f"Error processing record: {str(e)}")
             return None
     
     def process_api_response(self, api_response: Dict[str, Any], source_identifier: str = None) -> List[Dict[str, Any]]:
@@ -387,16 +408,30 @@ class DataProcessor:
             return processed_records
         
         # Store metadata first
-        self.store_metadata(api_response)
+        logger.info("Storing metadata from API response")
+        metadata_success = self.store_metadata(api_response)
+        
+        if not metadata_success:
+            logger.warning("Some metadata could not be stored")
         
         # Process each record
         raw_records = api_response['data']
         logger.info(f"Processing {len(raw_records)} raw records")
         
+        # Track processed and failed records
+        processed_count = 0
+        failed_count = 0
+        
         for raw_record in raw_records:
             processed_record = self.process_tariffline_record(raw_record, source_identifier)
             if processed_record:
                 processed_records.append(processed_record)
+                processed_count += 1
+            else:
+                failed_count += 1
         
-        logger.info(f"Successfully processed {len(processed_records)} records")
+        if failed_count > 0:
+            logger.warning(f"Failed to process {failed_count} records")
+            
+        logger.info(f"Successfully processed {processed_count} records, failed {failed_count} records")
         return processed_records
