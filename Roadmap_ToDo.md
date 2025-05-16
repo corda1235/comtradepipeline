@@ -1,9 +1,5 @@
 # Recap dello Sviluppo - Comtrade Data Pipeline
 
-# File: Roadmap_ToDo.md
-
-# Recap dello Sviluppo - Comtrade Data Pipeline
-
 Abbiamo seguito la roadmap implementativa definita all'inizio del progetto e fino ad ora abbiamo completato i seguenti elementi:
 
 ## 1. Setup dell'Ambiente di Sviluppo (Completato)
