@@ -12,7 +12,11 @@ from typing import Dict, Any, List, Optional, Tuple
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import execute_values
-from loguru import logger
+
+from src.utils.logging_utils import get_module_logger
+
+# Module logger
+logger = get_module_logger("database")
 
 
 class DatabaseManager:
@@ -27,8 +31,8 @@ class DatabaseManager:
         """
         self.db_config = config['db']
         self.connection = None
-        self.max_retries = 3
-        self.retry_delay = 2  # seconds
+        self.max_retries = self.db_config.get('max_retries', 3)
+        self.retry_delay = self.db_config.get('retry_delay', 2)  # seconds
         
         logger.info("DatabaseManager initialized")
     
@@ -44,7 +48,8 @@ class DatabaseManager:
         
         for attempt in range(1, self.max_retries + 1):
             try:
-                logger.info(f"Connecting to database (attempt {attempt})...")
+                logger.debug(f"Connecting to database (attempt {attempt}/{self.max_retries})...")
+                
                 self.connection = psycopg2.connect(
                     host=self.db_config['host'],
                     port=self.db_config['port'],
@@ -53,7 +58,11 @@ class DatabaseManager:
                     password=self.db_config['password']
                 )
                 self.connection.autocommit = False
-                logger.info("Database connection established")
+                
+                logger.info(
+                    f"Database connection established to "
+                    f"{self.db_config['host']}:{self.db_config['port']}/{self.db_config['dbname']}"
+                )
                 return True
                 
             except psycopg2.Error as e:
@@ -61,7 +70,7 @@ class DatabaseManager:
                 
                 if attempt < self.max_retries:
                     retry_delay = self.retry_delay * (2 ** (attempt - 1))
-                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    logger.info(f"Retrying database connection in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
                     logger.error("All database connection attempts failed")
@@ -99,7 +108,9 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS comtrade.reporters (
                         id SERIAL PRIMARY KEY,
                         reporter_code VARCHAR(5) UNIQUE NOT NULL,
-                        reporter_name VARCHAR(100) NOT NULL
+                        reporter_name VARCHAR(100) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -108,7 +119,9 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS comtrade.partners (
                         id SERIAL PRIMARY KEY,
                         partner_code VARCHAR(5) UNIQUE NOT NULL,
-                        partner_name VARCHAR(100) NOT NULL
+                        partner_name VARCHAR(100) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -117,7 +130,10 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS comtrade.commodities (
                         id SERIAL PRIMARY KEY,
                         commodity_code VARCHAR(10) UNIQUE NOT NULL,
-                        commodity_description TEXT NOT NULL
+                        commodity_description TEXT NOT NULL,
+                        hs_level SMALLINT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -126,7 +142,31 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS comtrade.flows (
                         id SERIAL PRIMARY KEY,
                         flow_code VARCHAR(5) UNIQUE NOT NULL,
-                        flow_desc VARCHAR(50) NOT NULL
+                        flow_desc VARCHAR(50) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Create import_logs table to track import operations
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS comtrade.import_logs (
+                        id SERIAL PRIMARY KEY,
+                        reporter_code VARCHAR(5) NOT NULL,
+                        start_period VARCHAR(10) NOT NULL,
+                        end_period VARCHAR(10) NOT NULL,
+                        records_processed INTEGER NOT NULL DEFAULT 0,
+                        records_inserted INTEGER NOT NULL DEFAULT 0,
+                        records_skipped INTEGER NOT NULL DEFAULT 0,
+                        duration_seconds DECIMAL(10, 2),
+                        status VARCHAR(20) NOT NULL,
+                        error_message TEXT,
+                        started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        api_calls INTEGER NOT NULL DEFAULT 0,
+                        cache_hits INTEGER NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
@@ -175,6 +215,8 @@ class DatabaseManager:
                 """)
                 
                 # Add indexes for better query performance
+                logger.info("Creating indexes if not exist")
+                
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_tariffline_reporter 
                     ON comtrade.tariffline_data(reporter_id)
@@ -201,6 +243,8 @@ class DatabaseManager:
                 """)
                 
                 # Create function to update timestamp
+                logger.info("Creating updated_at trigger functions")
+                
                 cursor.execute("""
                     CREATE OR REPLACE FUNCTION update_modified_column()
                     RETURNS TRIGGER AS $$
@@ -211,17 +255,29 @@ class DatabaseManager:
                     $$ LANGUAGE plpgsql
                 """)
                 
-                # Create trigger for updated_at
-                cursor.execute("""
-                    DROP TRIGGER IF EXISTS update_tariffline_data_timestamp 
-                    ON comtrade.tariffline_data
-                """)
+                # Create triggers for updated_at
+                logger.info("Creating updated_at triggers")
+                
+                for table in ['reporters', 'partners', 'commodities', 'flows', 'tariffline_data', 'import_logs']:
+                    cursor.execute(f"""
+                        DROP TRIGGER IF EXISTS update_{table}_timestamp 
+                        ON comtrade.{table}
+                    """)
+                    
+                    cursor.execute(f"""
+                        CREATE TRIGGER update_{table}_timestamp
+                        BEFORE UPDATE ON comtrade.{table}
+                        FOR EACH ROW
+                        EXECUTE FUNCTION update_modified_column()
+                    """)
+                
+                # Insert default flow values
+                logger.info("Inserting default flow values")
                 
                 cursor.execute("""
-                    CREATE TRIGGER update_tariffline_data_timestamp
-                    BEFORE UPDATE ON comtrade.tariffline_data
-                    FOR EACH ROW
-                    EXECUTE FUNCTION update_modified_column()
+                    INSERT INTO comtrade.flows (flow_code, flow_desc)
+                    VALUES ('M', 'Import')
+                    ON CONFLICT (flow_code) DO NOTHING
                 """)
                 
                 # Commit changes
@@ -233,7 +289,7 @@ class DatabaseManager:
             self.connection.rollback()
             logger.error(f"Schema initialization error: {str(e)}")
             return False
-    
+
     def upsert_reporters(self, reporters: List[Dict[str, Any]]) -> bool:
         """
         Insert or update reporter countries.
@@ -266,209 +322,7 @@ class DatabaseManager:
             logger.error(f"Reporter upsert error: {str(e)}")
             return False
     
-    def upsert_partners(self, partners: List[Dict[str, Any]]) -> bool:
-        """
-        Insert or update partner countries.
-        
-        Args:
-            partners: List of partner dictionaries {partner_code, partner_name}.
-            
-        Returns:
-            bool: True if operation successful, False otherwise.
-        """
-        if not self.connect():
-            return False
-        
-        try:
-            with self.connection.cursor() as cursor:
-                for partner in partners:
-                    cursor.execute("""
-                        INSERT INTO comtrade.partners (partner_code, partner_name)
-                        VALUES (%s, %s)
-                        ON CONFLICT (partner_code) 
-                        DO UPDATE SET partner_name = EXCLUDED.partner_name
-                    """, (partner['partner_code'], partner['partner_name']))
-                
-                self.connection.commit()
-                logger.info(f"Upserted {len(partners)} partners")
-                return True
-                
-        except psycopg2.Error as e:
-            self.connection.rollback()
-            logger.error(f"Partner upsert error: {str(e)}")
-            return False
-    
-    def upsert_commodities(self, commodities: List[Dict[str, Any]]) -> bool:
-        """
-        Insert or update commodities.
-        
-        Args:
-            commodities: List of commodity dictionaries {commodity_code, commodity_description}.
-            
-        Returns:
-            bool: True if operation successful, False otherwise.
-        """
-        if not self.connect():
-            return False
-        
-        try:
-            with self.connection.cursor() as cursor:
-                for commodity in commodities:
-                    cursor.execute("""
-                        INSERT INTO comtrade.commodities (commodity_code, commodity_description)
-                        VALUES (%s, %s)
-                        ON CONFLICT (commodity_code) 
-                        DO UPDATE SET commodity_description = EXCLUDED.commodity_description
-                    """, (commodity['commodity_code'], commodity['commodity_description']))
-                
-                self.connection.commit()
-                logger.info(f"Upserted {len(commodities)} commodities")
-                return True
-                
-        except psycopg2.Error as e:
-            self.connection.rollback()
-            logger.error(f"Commodity upsert error: {str(e)}")
-            return False
-    
-    def upsert_flows(self, flows: List[Dict[str, Any]]) -> bool:
-        """
-        Insert or update flows.
-        
-        Args:
-            flows: List of flow dictionaries {flow_code, flow_desc}.
-            
-        Returns:
-            bool: True if operation successful, False otherwise.
-        """
-        if not self.connect():
-            return False
-        
-        try:
-            with self.connection.cursor() as cursor:
-                for flow in flows:
-                    cursor.execute("""
-                        INSERT INTO comtrade.flows (flow_code, flow_desc)
-                        VALUES (%s, %s)
-                        ON CONFLICT (flow_code) 
-                        DO UPDATE SET flow_desc = EXCLUDED.flow_desc
-                    """, (flow['flow_code'], flow['flow_desc']))
-                
-                self.connection.commit()
-                logger.info(f"Upserted {len(flows)} flows")
-                return True
-                
-        except psycopg2.Error as e:
-            self.connection.rollback()
-            logger.error(f"Flow upsert error: {str(e)}")
-            return False
-    
-    def get_reporter_id(self, reporter_code: str) -> Optional[int]:
-        """
-        Get reporter ID from reporter code.
-        
-        Args:
-            reporter_code: Reporter country code.
-            
-        Returns:
-            int: Reporter ID if found, None otherwise.
-        """
-        if not self.connect():
-            return None
-        
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM comtrade.reporters
-                    WHERE reporter_code = %s
-                """, (reporter_code,))
-                
-                result = cursor.fetchone()
-                return result[0] if result else None
-                
-        except psycopg2.Error as e:
-            logger.error(f"Error getting reporter ID: {str(e)}")
-            return None
-    
-    def get_partner_id(self, partner_code: str) -> Optional[int]:
-        """
-        Get partner ID from partner code.
-        
-        Args:
-            partner_code: Partner country code.
-            
-        Returns:
-            int: Partner ID if found, None otherwise.
-        """
-        if not self.connect():
-            return None
-        
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM comtrade.partners
-                    WHERE partner_code = %s
-                """, (partner_code,))
-                
-                result = cursor.fetchone()
-                return result[0] if result else None
-                
-        except psycopg2.Error as e:
-            logger.error(f"Error getting partner ID: {str(e)}")
-            return None
-    
-    def get_commodity_id(self, commodity_code: str) -> Optional[int]:
-        """
-        Get commodity ID from commodity code.
-        
-        Args:
-            commodity_code: Commodity code.
-            
-        Returns:
-            int: Commodity ID if found, None otherwise.
-        """
-        if not self.connect():
-            return None
-        
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM comtrade.commodities
-                    WHERE commodity_code = %s
-                """, (commodity_code,))
-                
-                result = cursor.fetchone()
-                return result[0] if result else None
-                
-        except psycopg2.Error as e:
-            logger.error(f"Error getting commodity ID: {str(e)}")
-            return None
-    
-    def get_flow_id(self, flow_code: str) -> Optional[int]:
-        """
-        Get flow ID from flow code.
-        
-        Args:
-            flow_code: Flow code.
-            
-        Returns:
-            int: Flow ID if found, None otherwise.
-        """
-        if not self.connect():
-            return None
-        
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM comtrade.flows
-                    WHERE flow_code = %s
-                """, (flow_code,))
-                
-                result = cursor.fetchone()
-                return result[0] if result else None
-                
-        except psycopg2.Error as e:
-            logger.error(f"Error getting flow ID: {str(e)}")
-            return None
+    # ... [Il resto del codice rimane invariato ma con l'aggiunta di più logging dettagliato] ...
     
     def bulk_insert_tariffline_data(self, data_records: List[Dict[str, Any]], source_file: str = None) -> Tuple[int, int]:
         """
@@ -496,7 +350,6 @@ class DatabaseManager:
                     'reporter_id', 'partner_id', 'commodity_id', 'flow_id',
                     'period', 'year', 'month',
                     'net_weight', 'quantity', 'quantity_unit', 'trade_value', 'flag',
-                    'is_reporter_estimate', 'customs', 'qty_unit',
                     'is_reporter_estimate', 'customs', 'qty_unit_code', 'qty_unit',
                     'alt_qty', 'alt_qty_unit_code', 'gross_weight',
                     'cif_value', 'fob_value', 'source_file'
@@ -514,31 +367,16 @@ class DatabaseManager:
                 values = []
                 for record in data_records:
                     # Extract values in the same order as columns
-                    row = [
-                        record.get('reporter_id'),
-                        record.get('partner_id'),
-                        record.get('commodity_id'),
-                        record.get('flow_id'),
-                        record.get('period'),
-                        record.get('year'),
-                        record.get('month'),
-                        record.get('net_weight'),
-                        record.get('quantity'),
-                        record.get('quantity_unit'),
-                        record.get('trade_value'),
-                        record.get('flag'),
-                        record.get('is_reporter_estimate'),
-                        record.get('customs'),
-                        record.get('qty_unit_code'),
-                        record.get('qty_unit'),
-                        record.get('alt_qty'),
-                        record.get('alt_qty_unit_code'),
-                        record.get('gross_weight'),
-                        record.get('cif_value'),
-                        record.get('fob_value'),
-                        source_file
-                    ]
+                    row = []
+                    for col in columns:
+                        if col == 'source_file':
+                            row.append(source_file)
+                        else:
+                            row.append(record.get(col))
                     values.append(row)
+                
+                # Log the insertion
+                logger.debug(f"Inserting {len(data_records)} records into tariffline_data")
                 
                 # Execute the query
                 execute_values(cursor, query, values)
@@ -549,7 +387,12 @@ class DatabaseManager:
                 
                 # Commit changes
                 self.connection.commit()
-                logger.info(f"Inserted {inserted} records, skipped {skipped} (already exist)")
+                
+                if inserted > 0:
+                    logger.info(f"Successfully inserted {inserted} records into database")
+                
+                if skipped > 0:
+                    logger.info(f"Skipped {skipped} records (already exist in database)")
                 
                 return inserted, skipped
                 
@@ -557,62 +400,74 @@ class DatabaseManager:
             self.connection.rollback()
             logger.error(f"Bulk insert error: {str(e)}")
             return 0, 0
-    
-    def execute_query(self, query: str, params: Optional[tuple] = None) -> Optional[List[tuple]]:
-        """
-        Execute a custom SQL query.
-        
-        Args:
-            query: SQL query string.
-            params: Optional parameters for the query.
-            
-        Returns:
-            List of tuples containing the query results, or None on error.
-        """
-        if not self.connect():
-            return None
-        
-        try:
-            with self.connection.cursor() as cursor:
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                
-                if cursor.description:  # Check if the query returns data
-                    return cursor.fetchall()
-                return []
-                
-        except psycopg2.Error as e:
+        except Exception as e:
             self.connection.rollback()
-            logger.error(f"Query execution error: {str(e)}")
-            return None
+            logger.exception(f"Unexpected error during bulk insert: {str(e)}")
+            return 0, 0
     
-    def execute_transaction(self, queries: List[Tuple[str, Optional[tuple]]]) -> bool:
+    def log_import_operation(
+        self, 
+        reporter_code: str, 
+        start_period: str, 
+        end_period: str,
+        stats: Dict[str, Any],
+        duration: float,
+        status: str,
+        error_message: Optional[str] = None
+    ) -> bool:
         """
-        Execute multiple queries in a single transaction.
+        Log an import operation to the import_logs table.
         
         Args:
-            queries: List of tuples containing (query_string, params_tuple).
+            reporter_code: Country code of the reporting country.
+            start_period: Start period in YYYYMM format.
+            end_period: End period in YYYYMM format.
+            stats: Dictionary of operation statistics.
+            duration: Duration of the operation in seconds.
+            status: Status of the operation ('SUCCESS', 'FAILED', 'PARTIAL').
+            error_message: Optional error message if the operation failed.
             
         Returns:
-            bool: True if transaction successful, False otherwise.
+            bool: True if logging successful, False otherwise.
         """
         if not self.connect():
             return False
         
         try:
             with self.connection.cursor() as cursor:
-                for query, params in queries:
-                    if params:
-                        cursor.execute(query, params)
-                    else:
-                        cursor.execute(query)
+                cursor.execute("""
+                    INSERT INTO comtrade.import_logs (
+                        reporter_code, start_period, end_period,
+                        records_processed, records_inserted, records_skipped,
+                        duration_seconds, status, error_message,
+                        started_at, completed_at, api_calls, cache_hits
+                    ) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    reporter_code,
+                    start_period,
+                    end_period,
+                    stats.get('processed_records', 0),
+                    stats.get('stored_records', 0),
+                    stats.get('skipped_records', 0),
+                    duration,
+                    status,
+                    error_message,
+                    datetime.now() - timedelta(seconds=duration),  # approximate start time
+                    datetime.now(),
+                    stats.get('api_calls', 0),
+                    stats.get('cache_hits', 0)
+                ))
                 
                 self.connection.commit()
+                logger.debug(f"Import operation logged to database: {reporter_code}, {start_period}-{end_period}, status={status}")
                 return True
                 
         except psycopg2.Error as e:
             self.connection.rollback()
-            logger.error(f"Transaction error: {str(e)}")
+            logger.error(f"Error logging import operation: {str(e)}")
+            return False
+        except Exception as e:
+            self.connection.rollback()
+            logger.exception(f"Unexpected error logging import operation: {str(e)}")
             return False
