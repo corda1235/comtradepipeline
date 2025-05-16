@@ -14,7 +14,11 @@ from typing import Dict, Any, Optional, List, Tuple
 
 import comtradeapicall
 import requests
-from loguru import logger
+
+from src.utils.logging_utils import get_module_logger, log_api_call
+
+# Module logger
+logger = get_module_logger("api.client")
 
 
 class ComtradeAPIClient:
@@ -41,8 +45,8 @@ class ComtradeAPIClient:
         self.use_primary = True
         
         # Retry configuration
-        self.max_retries = 5
-        self.base_retry_delay = 2  # seconds
+        self.max_retries = config['api'].get('retry_attempts', 5)
+        self.base_retry_delay = config['api'].get('base_retry_delay', 2)  # seconds
         
         logger.info("ComtradeAPIClient initialized")
         
@@ -146,15 +150,22 @@ class ComtradeAPIClient:
         if custom_args:
             params.update(custom_args)
             
+        # Log API call
+        logger.debug(f"Making tariffline API call: reporter={reporter_code}, period={period_start}:{period_end}")
+        
         # Perform the API call with retries
         for attempt in range(1, self.max_retries + 1):
             try:
-                logger.debug(f"Making tariffline API call (attempt {attempt}): {params}")
+                logger.debug(f"API call attempt {attempt}/{self.max_retries}")
+                
                 data = comtradeapicall.getTarifflineData(params)
                 
                 # Check for valid response
                 if isinstance(data, dict) and 'data' in data:
                     self._increment_call_count()
+                    
+                    # Get response size for logging
+                    response_size = len(str(data))
                     
                     # Check if number of records exceeds limit
                     count = len(data.get('data', []))
@@ -164,11 +175,28 @@ class ComtradeAPIClient:
                             f"({self.record_limit}). Some data may be missing."
                         )
                     
+                    # Log successful API call
+                    log_api_call(
+                        endpoint="getTarifflineData",
+                        params=params,
+                        success=True,
+                        response_size=response_size
+                    )
+                    
                     logger.debug(f"API call successful, retrieved {count} records")
                     return data, True
                 
+                # Log error details
                 error_msg = data.get('error', {}).get('message', str(data)) if isinstance(data, dict) else str(data)
                 logger.error(f"API call failed: {error_msg}")
+                
+                # Log failed API call
+                log_api_call(
+                    endpoint="getTarifflineData",
+                    params=params,
+                    success=False,
+                    response_size=0
+                )
                 
                 # Handle specific error cases
                 if isinstance(data, dict) and 'error' in data:
@@ -187,12 +215,30 @@ class ComtradeAPIClient:
                 
             except requests.exceptions.RequestException as e:
                 logger.error(f"Request exception: {str(e)}")
+                
+                # Log failed API call
+                log_api_call(
+                    endpoint="getTarifflineData",
+                    params=params,
+                    success=False,
+                    response_size=0
+                )
+                
                 retry_delay = self.base_retry_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.info(f"Retrying in {retry_delay:.2f} seconds...")
                 time.sleep(retry_delay)
                 
             except Exception as e:
                 logger.exception(f"Unexpected error during API call: {str(e)}")
+                
+                # Log failed API call
+                log_api_call(
+                    endpoint="getTarifflineData",
+                    params=params,
+                    success=False,
+                    response_size=0
+                )
+                
                 retry_delay = self.base_retry_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.info(f"Retrying in {retry_delay:.2f} seconds...")
                 time.sleep(retry_delay)
