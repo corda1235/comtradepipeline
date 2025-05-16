@@ -1,7 +1,8 @@
 # ComTrade data download Pipeline Script
 
 Questo progetto è relativo allo sviluppo di uno script parametrico che consente il download e l'archiviazione dei dati del commercio internazionale relativi alle importazioni dei 27 paesi dell'Unione Europea.
-Si basa sul pacchetto Python comtradeapicall, disponibile su PyPI. Questo pacchetto è progettato per semplificare l'interazione con le API di UN Comtrade, una piattaforma delle Nazioni Unite che fornisce dati dettagliati sul commercio internazionale. Attraverso comtradeapicall, gli utenti possono estrarre e scaricare dati commerciali in modo più agevole, utilizzando funzioni Python che gestiscono le complessità delle chiamate API sottostanti.
+Si basa sul pacchetto Python comtradeapicall, disponibile su PyPI al link "https://pypi.org/project/comtradeapicall/". 
+Questo pacchetto è progettato per semplificare l'interazione con le API di UN Comtrade, una piattaforma delle Nazioni Unite che fornisce dati dettagliati sul commercio internazionale. Attraverso comtradeapicall, gli utenti possono estrarre e scaricare dati commerciali in modo più agevole, utilizzando funzioni Python che gestiscono le complessità delle chiamate API sottostanti.
 
 Ecco un riepilogo completo dei dettagli tecnici dello script:
 
