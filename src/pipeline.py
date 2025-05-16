@@ -11,13 +11,16 @@ import time
 import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Union
-from loguru import logger
 
 from src.api import ComtradeAPIClient
 from src.cache import CacheManager
 from src.database import DatabaseManager
 from src.processing import DataProcessor
 from src.utils.date_utils import generate_date_ranges
+from src.utils.logging_utils import get_module_logger, log_pipeline_stats
+
+# Module logger
+logger = get_module_logger("pipeline")
 
 
 class ComtradePipeline:
@@ -33,13 +36,23 @@ class ComtradePipeline:
         self.config = config
         
         # Initialize components
+        logger.info("Initializing pipeline components...")
+        
         self.api_client = ComtradeAPIClient(config)
+        logger.debug("API client initialized")
+        
         self.cache_manager = CacheManager(config)
+        logger.debug("Cache manager initialized")
+        
         self.db_manager = DatabaseManager(config)
+        logger.debug("Database manager initialized")
+        
         self.data_processor = DataProcessor(self.db_manager)
+        logger.debug("Data processor initialized")
         
         # EU countries list
         self.eu_countries = config['eu_countries']
+        logger.debug(f"EU countries loaded: {len(self.eu_countries)} countries")
         
         # Pipeline statistics
         self.stats = {
@@ -61,7 +74,15 @@ class ComtradePipeline:
         Returns:
             bool: True if initialization successful, False otherwise.
         """
-        return self.db_manager.initialize_schema()
+        logger.info("Initializing database schema...")
+        result = self.db_manager.initialize_schema()
+        
+        if result:
+            logger.info("Database schema initialized successfully")
+        else:
+            logger.error("Failed to initialize database schema")
+            
+        return result
     
     def _get_api_params(self, reporter_code: str, start_date: str, end_date: str) -> Dict[str, Any]:
         """
@@ -114,7 +135,7 @@ class ComtradePipeline:
             return data, True
         
         # Not in cache, fetch from API
-        logger.info(f"Fetching data for reporter {reporter_code}, period {start_date} to {end_date}")
+        logger.info(f"Cache miss for reporter {reporter_code}, period {start_date} to {end_date}. Fetching from API...")
         
         data, success = self.api_client.get_tariffline_data(
             reporter_code=reporter_code,
@@ -131,6 +152,7 @@ class ComtradePipeline:
             return None, False
         
         # Save to cache
+        logger.debug(f"Saving API response to cache for reporter {reporter_code}, period {start_date} to {end_date}")
         self.cache_manager.save(params, data)
         
         return data, True
@@ -164,6 +186,7 @@ class ComtradePipeline:
             return False
         
         self.stats['processed_records'] += len(processed_records)
+        logger.info(f"Processed {len(processed_records)} records for reporter {reporter_code}")
         
         # Store in database
         logger.info(f"Storing {len(processed_records)} records for reporter {reporter_code}, period {start_date} to {end_date}")
@@ -171,6 +194,17 @@ class ComtradePipeline:
         
         self.stats['stored_records'] += inserted
         self.stats['skipped_records'] += skipped
+        
+        # Log the import operation in the database
+        operation_status = "SUCCESS" if inserted > 0 else "PARTIAL" if skipped > 0 else "FAILED"
+        self.db_manager.log_import_operation(
+            reporter_code=reporter_code,
+            start_period=start_date.replace('-', ''),
+            end_period=end_date.replace('-', ''),
+            stats=self.stats,
+            duration=0.0,  # Will be calculated later
+            status=operation_status
+        )
         
         return inserted > 0
     
@@ -190,14 +224,18 @@ class ComtradePipeline:
         
         # Create smaller date ranges to avoid hitting API record limits
         date_ranges = generate_date_ranges(start_date, end_date, months_per_call=3)
+        logger.debug(f"Generated {len(date_ranges)} date ranges for API calls")
         
         success = True
-        for range_start, range_end in date_ranges:
+        for i, (range_start, range_end) in enumerate(date_ranges):
+            logger.info(f"Processing date range {i+1}/{len(date_ranges)}: {range_start} to {range_end}")
+            
             # Fetch data
             data, fetch_success = self._fetch_data(reporter_code, range_start, range_end)
             
             if not fetch_success:
                 success = False
+                logger.error(f"Failed to fetch data for range {range_start} to {range_end}")
                 continue
             
             # Process and store data
@@ -205,10 +243,16 @@ class ComtradePipeline:
             
             if not store_success:
                 success = False
+                logger.warning(f"No data stored for range {range_start} to {range_end}")
             
             # Sleep a bit to avoid overwhelming the API
             time.sleep(1)
         
+        if success:
+            logger.info(f"Successfully processed reporter {reporter_code} for period {start_date} to {end_date}")
+        else:
+            logger.warning(f"Partially processed reporter {reporter_code} for period {start_date} to {end_date}")
+            
         return success
     
     def run(self, countries: Union[List[str], str], start_date: str, end_date: str) -> bool:
@@ -248,19 +292,33 @@ class ComtradePipeline:
         else:
             # Filter only valid EU countries
             target_countries = [c for c in countries if c in self.eu_countries]
+            
+            # Log warning if invalid countries were provided
+            if isinstance(countries, list) and len(countries) != len(target_countries):
+                invalid_countries = set(countries) - set(target_countries)
+                logger.warning(f"Ignoring invalid country codes: {', '.join(invalid_countries)}")
         
         logger.info(f"Processing {len(target_countries)} countries: {', '.join(target_countries)}")
         
         # Process each country
         success = True
-        for country in target_countries:
+        for i, country in enumerate(target_countries):
+            logger.info(f"Processing country {i+1}/{len(target_countries)}: {country}")
             country_success = self._process_reporter(country, start_date, end_date)
             if not country_success:
                 success = False
+                logger.warning(f"Problems encountered while processing country {country}")
         
         # Log statistics
         elapsed_time = time.time() - start_time
         logger.info(f"Pipeline completed in {elapsed_time:.2f} seconds")
-        logger.info(f"Statistics: {self.stats}")
+        
+        # Log detailed statistics
+        log_pipeline_stats(self.stats)
+        
+        if success:
+            logger.info("Pipeline completed successfully")
+        else:
+            logger.warning("Pipeline completed with some issues")
         
         return success
