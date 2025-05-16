@@ -19,3 +19,6 @@ loguru==0.7.0
 
 # Utilità
 tqdm==4.66.1
+
+# Monitoraggio
+flask==2.3.3
