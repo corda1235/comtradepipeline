@@ -1,4 +1,6 @@
-echo "# Python
+# File: .gitignore
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -32,4 +34,12 @@ logs/
 
 # OS
 .DS_Store
-Thumbs.db" > .gitignore
+Thumbs.db
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Sphinx documentation
+docs/_build/
