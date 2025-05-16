@@ -83,23 +83,24 @@ Abbiamo seguito la roadmap implementativa definita all'inizio del progetto e fin
 
 I seguenti elementi della roadmap originale sono ancora da completare:
 
-## 10. Documentazione e Finalizzazione
-- 🔄 Documentazione completa del codice (parzialmente completato)
-- ⏳ Creazione di un manuale utente dettagliato
-- ⏳ Esempi di utilizzo e casi d'uso
-- ⏳ Istruzioni per deployment su VPS
-
-## 11. Deployment su VPS
+## 10. Deployment su VPS
 - ⏳ Configurazione ambiente su VPS Ubuntu 22.04
 - ⏳ Setup database PostgreSQL
 - ⏳ Deployment dello script e configurazione
 - ⏳ Test in ambiente di produzione
 
-## 12. Monitoraggio e Manutenzione
+## 11. Monitoraggio e Manutenzione
 - ⏳ Monitoraggio delle performance
 - ⏳ Gestione degli errori imprevisti
 - ⏳ Aggiornamenti per mantenere compatibilità con API
 - ⏳ Ottimizzazioni basate sull'utilizzo reale
+
+## 12. Documentazione e Finalizzazione
+- 🔄 Documentazione completa del codice (parzialmente completato)
+- ⏳ Creazione di un manuale utente dettagliato
+- ⏳ Esempi di utilizzo e casi d'uso
+- ⏳ Istruzioni per deployment su VPS
+  
 
 ## File e Componenti Creati
 
