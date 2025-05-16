@@ -11,10 +11,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# Cache
-.cache/
-cache/
-
 # Logs
 logs/
 *.log
