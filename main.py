@@ -1,4 +1,4 @@
-# File: main.py (aggiornamento completo)
+# File: main.py
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -9,13 +9,19 @@ This script downloads and stores UN Comtrade tariffline data for EU countries.
 """
 
 import sys
+import time
 import argparse
 from datetime import datetime
-from loguru import logger
+from typing import List, Union, Optional
 
 from src.pipeline import ComtradePipeline
 from src.utils.config_loader import load_config
 from src.utils.date_utils import parse_date
+from src.utils.logging_utils import setup_logger, get_module_logger
+from src.monitoring.monitor import PipelineMonitor
+
+# Module logger
+logger = get_module_logger("main")
 
 
 def setup_argparse():
@@ -34,14 +40,12 @@ def setup_argparse():
     parser.add_argument(
         '--start-date', 
         type=str, 
-        required=True, 
         help='Start date in YYYY-MM format'
     )
     
     parser.add_argument(
         '--end-date', 
         type=str, 
-        required=True, 
         help='End date in YYYY-MM format'
     )
     
@@ -80,13 +84,42 @@ def setup_argparse():
         action='store_true', 
         help='Only initialize the database schema and exit'
     )
+    
+    # Monitoring parameters
+    parser.add_argument(
+        '--daily-report',
+        action='store_true',
+        help='Generate a daily report after execution'
+    )
+    
+    parser.add_argument(
+        '--no-alerts',
+        action='store_true',
+        help='Disable failure alerts'
+    )
 
     return parser.parse_args()
 
 
 def validate_args(args):
-    """Validate command line arguments."""
+    """
+    Validate command line arguments.
+    
+    Args:
+        args: Command line arguments.
+        
+    Returns:
+        bool: True if arguments are valid, False otherwise.
+    """
+    # Skip validation for database initialization only
+    if args.db_init_only:
+        return True
+    
     # Validate dates
+    if not args.start_date or not args.end_date:
+        logger.error("Start date and end date are required")
+        return False
+    
     try:
         start_date = parse_date(args.start_date)
         end_date = parse_date(args.end_date)
@@ -96,7 +129,7 @@ def validate_args(args):
             return False
             
     except ValueError as e:
-        logger.error(str(e))
+        logger.error(f"Date validation error: {str(e)}")
         return False
     
     # Validate country codes
@@ -109,32 +142,44 @@ def validate_args(args):
     return True
 
 
-def setup_logging(args):
-    """Configure logging."""
-    logger.remove()  # Remove default handler
+def get_countries_list(countries_arg: str, eu_countries: List[str]) -> List[str]:
+    """
+    Get list of countries to process.
     
-    # Add stderr handler
-    logger.add(sys.stderr, level=args.log_level)
+    Args:
+        countries_arg: Countries argument from command line.
+        eu_countries: List of all EU countries.
+        
+    Returns:
+        List of country codes to process.
+    """
+    if countries_arg == 'all':
+        return eu_countries
     
-    # Add file handler with rotation
-    log_file = args.log_file
-    if not log_file:
-        current_date = datetime.now().strftime('%Y-%m-%d')
-        log_file = f"logs/comtrade_pipeline_{current_date}.log"
+    country_codes = countries_arg.split(',')
     
-    logger.add(
-        log_file, 
-        rotation='100 MB', 
-        retention='30 days', 
-        level=args.log_level
-    )
+    # Filter only valid EU countries
+    valid_countries = [c for c in country_codes if c in eu_countries]
     
-    logger.info(f"Logging initialized at {args.log_level} level")
-    logger.info(f"Log file: {log_file}")
+    if len(valid_countries) != len(country_codes):
+        invalid_countries = set(country_codes) - set(valid_countries)
+        logger.warning(f"Ignored invalid country codes: {', '.join(invalid_countries)}")
+    
+    if not valid_countries:
+        logger.warning("No valid country codes provided, using all EU countries")
+        return eu_countries
+    
+    return valid_countries
 
 
 def handle_cache(pipeline, args):
-    """Handle cache operations."""
+    """
+    Handle cache operations.
+    
+    Args:
+        pipeline: Pipeline instance.
+        args: Command line arguments.
+    """
     if args.clear_cache:
         if args.cache_days:
             count = pipeline.cache_manager.clear(days_old=args.cache_days)
@@ -148,15 +193,34 @@ def main():
     """Main function to run the pipeline."""
     # Parse and validate arguments
     args = setup_argparse()
-    if not validate_args(args):
-        sys.exit(1)
-    
-    # Setup logging
-    setup_logging(args)
     
     # Load configuration
     config = load_config()
+    
+    # Setup logging
+    setup_logger(
+        config=config,
+        log_level=args.log_level,
+        log_file=args.log_file
+    )
+    
+    # Validate arguments after logging is set up
+    if not validate_args(args):
+        sys.exit(1)
+    
     logger.info('Configuration loaded')
+    
+    # Set up monitoring
+    monitor = PipelineMonitor(config)
+    
+    # Update monitoring configuration from command line args
+    if args.no_alerts and 'monitoring' in config:
+        config['monitoring']['alerts']['enabled'] = False
+    
+    start_time = time.time()
+    success = False
+    pipeline_stats = {}
+    countries_list = []
     
     try:
         # Initialize pipeline
@@ -175,26 +239,52 @@ def main():
                 logger.error('Failed to initialize database schema')
                 sys.exit(1)
         
+        # Get list of countries to process
+        countries_list = get_countries_list(args.countries, config['eu_countries'])
+        
         # Run the pipeline
         logger.info(f"Starting Comtrade Data Pipeline for period {args.start_date} to {args.end_date}")
+        logger.info(f"Processing {len(countries_list)} countries: {', '.join(countries_list)}")
         
-        countries = args.countries.split(',') if args.countries != 'all' else 'all'
         success = pipeline.run(
-            countries=countries,
+            countries=countries_list,
             start_date=args.start_date,
             end_date=args.end_date
         )
         
+        # Get pipeline statistics
+        pipeline_stats = pipeline.stats
+        
         if success:
             logger.info('Pipeline completed successfully')
-            sys.exit(0)
         else:
             logger.error('Pipeline completed with errors')
-            sys.exit(1)
             
     except Exception as e:
         logger.exception(f'Pipeline failed with error: {e}')
-        sys.exit(1)
+        success = False
+    finally:
+        # Calculate execution time
+        execution_time = time.time() - start_time
+        logger.info(f"Total execution time: {execution_time:.2f} seconds")
+        
+        # Save execution statistics
+        monitor.save_execution_stats(
+            stats=pipeline_stats,
+            countries=countries_list,
+            start_date=args.start_date if hasattr(args, 'start_date') else None,
+            end_date=args.end_date if hasattr(args, 'end_date') else None,
+            execution_time=execution_time,
+            success=success
+        )
+        
+        # Generate daily report if requested
+        if args.daily_report:
+            report_file = monitor.generate_daily_report()
+            if report_file:
+                logger.info(f"Daily report generated: {report_file}")
+    
+    sys.exit(0 if success else 1)
 
 
 if __name__ == '__main__':
