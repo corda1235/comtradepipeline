@@ -119,5 +119,3 @@ Basandoci sulla roadmap implementativa, i prossimi passi consigliati sono:
 2. **Sviluppare i Test Unitari e di Integrazione**
 3. **Finalizzare la Documentazione**
 4. **Preparare il Deployment su VPS**
-
-Vuoi procedere con il completamento di uno di questi elementi o preferisci rivedere/modificare qualcosa di quanto già sviluppato?
